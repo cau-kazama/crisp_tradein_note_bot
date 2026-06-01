@@ -209,27 +209,47 @@ class AutoTradeInNoteService:
         meta = conversation.get("meta") if isinstance(conversation.get("meta"), dict) else {}
         data = meta.get("data") if isinstance(meta.get("data"), dict) else {}
 
+        trade_in_id = data.get("trade-in-id") or data.get("tradeInId") or data.get("tradeinId")
+        item_id = data.get("item-id") or data.get("itemId")
+        backoffice_link = data.get("backoffice-link") or data.get("backofficeLink")
+
+        if not trade_in_id and isinstance(backoffice_link, str):
+            parsed = parse.urlparse(backoffice_link)
+            chunks = [part for part in parsed.path.split("/") if part]
+            if len(chunks) >= 2 and chunks[-2] == "trade-ins":
+                trade_in_id = chunks[-1]
+
+        if not backoffice_link and trade_in_id:
+            backoffice_link = f"https://admin.tradein.doji.com.br/trade-ins/{trade_in_id}"
+
         return {
-            "trade_in_id": data.get("trade-in-id") or data.get("tradeInId") or data.get("tradeinId"),
-            "item_id": data.get("item-id") or data.get("itemId"),
-            "backoffice_link": data.get("backoffice-link") or data.get("backofficeLink"),
+            "trade_in_id": trade_in_id,
+            "item_id": item_id,
+            "backoffice_link": backoffice_link,
         }
 
     def _build_note(self, fields: dict[str, str | None], session_id: str, website_id: str) -> str:
-        text = self.config.note_template.format(
-            trade_in_id=fields.get("trade_in_id") or "",
-            item_id=fields.get("item_id") or "",
-            backoffice_link=fields.get("backoffice_link") or "",
-            session_id=session_id,
-            website_id=website_id,
-        ).strip()
+        values = {
+            "trade_in_id": fields.get("trade_in_id") or "",
+            "item_id": fields.get("item_id") or "",
+            "backoffice_link": fields.get("backoffice_link") or "",
+            "session_id": session_id,
+            "website_id": website_id,
+            "link": fields.get("backoffice_link") or "",
+        }
+
+        text = self.config.note_template
+        for key, value in values.items():
+            text = text.replace(f"${{{key}}}", str(value))
+
+        class _SafeDict(dict):
+            def __missing__(self, key: str) -> str:
+                return ""
+
+        text = text.format_map(_SafeDict(values)).strip()
 
         if not text:
             raise ValueError("Generated note text is empty")
-
-        marker = self.config.note_marker.strip()
-        if marker and marker not in text:
-            text = f"{marker} {text}".strip()
 
         return text
 
@@ -266,11 +286,11 @@ class AutoTradeInNoteService:
 
             conversation = self.api.get_conversation(website_id, session_id)
             fields = self._extract_tradein_fields(conversation)
-            if not fields.get("trade_in_id"):
+            if not fields.get("backoffice_link"):
                 return {
                     "ok": True,
                     "status": "ignored",
-                    "reason": "trade_in_id_missing",
+                    "reason": "backoffice_link_missing",
                     "session_id": session_id,
                 }
 
@@ -292,6 +312,7 @@ class AutoTradeInNoteService:
                 "session_id": session_id,
                 "trade_in_id": fields.get("trade_in_id"),
                 "item_id": fields.get("item_id"),
+                "backoffice_link": fields.get("backoffice_link"),
                 "note_preview": note_text[:160],
             }
         finally:
@@ -329,7 +350,7 @@ def load_config() -> Config:
         allowed_website_ids=allowed,
         note_template=os.environ.get(
             "AUTO_NOTE_TEMPLATE",
-            "trade-in-id: {trade_in_id} | item-id: {item_id} | backoffice: {backoffice_link}",
+            "Link: ${link}",
         ),
         note_marker=os.environ.get("AUTO_NOTE_MARKER", "[AUTO_TRADEIN_NOTE]").strip(),
         sqlite_path=os.environ.get("SQLITE_PATH", "./auto_tradein_note.db").strip() or "./auto_tradein_note.db",

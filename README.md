@@ -13,7 +13,7 @@ The note is built from conversation `meta.data` values injected by your site:
 1. Receives Crisp webhook (`message:send`)
 2. Ignores non-user messages
 3. Fetches conversation from Crisp API
-4. Reads `meta.data.trade-in-id`
+4. Reads `meta.data.backoffice-link` (or derives from trade-in id)
 5. Sends private note (`type: note`) into same conversation
 6. Stores session in SQLite to avoid duplicate auto-notes
 
@@ -71,8 +71,7 @@ If plugin hooks are used, set same hook secret in Crisp + `CRISP_HOOK_SECRET`.
 1. Visitor sends message in widget
 2. Service receives `message:send`
 3. Private note appears in Crisp conversation:
-   - prefixed with marker `[AUTO_TRADEIN_NOTE]`
-   - includes trade-in id data
+   - format: `Link: <backoffice-link>`
 4. Visitor does **not** see note
 5. New visitor messages in same session do not create duplicate note
 
@@ -87,12 +86,13 @@ If plugin hooks are used, set same hook secret in Crisp + `CRISP_HOOK_SECRET`.
 ## Config knobs
 
 - `AUTO_NOTE_TEMPLATE` placeholders:
-  - `{trade_in_id}` `{item_id}` `{backoffice_link}` `{session_id}` `{website_id}`
+  - `${link}` (alias to backoffice link)
+  - `{backoffice_link}` `{trade_in_id}` `{item_id}` `{session_id}` `{website_id}`
 - `CRISP_ALLOWED_WEBSITE_IDS` to hard-limit accepted websites
 - `SQLITE_PATH` for dedupe persistence location
 
 ## Caveats
 
 - Current dedupe = one auto-note per `session_id`
-- If `trade-in-id` missing in `meta.data`, note is skipped
+- If both backoffice link and trade-in id are missing in `meta.data`, note is skipped
 - Return `500` on Crisp API failure so Crisp can retry webhook delivery
