@@ -15,7 +15,7 @@ The note is built from conversation `meta.data` values injected by your site:
 3. Fetches conversation from Crisp API
 4. Reads `meta.data.backoffice-link` (or derives from trade-in id)
 5. Sends private note (`type: note`) into same conversation
-6. Stores session in SQLite to avoid duplicate auto-notes
+6. Stores `(session_id, trade-in-id/backoffice-link)` in SQLite to avoid duplicate auto-notes for same trade-in context
 
 ## Requirements
 
@@ -73,7 +73,8 @@ If plugin hooks are used, set same hook secret in Crisp + `CRISP_HOOK_SECRET`.
 3. Private note appears in Crisp conversation:
    - format: `Link: <backoffice-link>`
 4. Visitor does **not** see note
-5. New visitor messages in same session do not create duplicate note
+5. New visitor messages in same session do not create duplicate note for same trade-in id/link
+6. If ids/link change in same session (new trade-in), bot sends new note
 
 ## Railway deploy
 
@@ -93,6 +94,6 @@ If plugin hooks are used, set same hook secret in Crisp + `CRISP_HOOK_SECRET`.
 
 ## Caveats
 
-- Current dedupe = one auto-note per `session_id`
+- Current dedupe = one auto-note per `(session_id, trade-in-id/backoffice-link)`
 - If both backoffice link and trade-in id are missing in `meta.data`, note is skipped
 - Return `500` on Crisp API failure so Crisp can retry webhook delivery

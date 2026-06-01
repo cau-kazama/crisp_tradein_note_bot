@@ -118,32 +118,43 @@ class DedupStore:
         with self._connect() as conn:
             conn.execute(
                 """
-                CREATE TABLE IF NOT EXISTS session_notes (
-                  session_id TEXT PRIMARY KEY,
+                CREATE TABLE IF NOT EXISTS note_events (
+                  session_id TEXT NOT NULL,
                   website_id TEXT NOT NULL,
+                  note_key TEXT NOT NULL,
                   trade_in_id TEXT,
+                  backoffice_link TEXT,
                   note_content TEXT NOT NULL,
                   sent_fingerprint TEXT,
-                  sent_at_ms INTEGER NOT NULL
+                  sent_at_ms INTEGER NOT NULL,
+                  PRIMARY KEY (session_id, note_key)
                 )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_note_events_session
+                ON note_events(session_id)
                 """
             )
             conn.commit()
 
-    def has_session_note(self, session_id: str) -> bool:
+    def has_note_event(self, session_id: str, note_key: str) -> bool:
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT 1 FROM session_notes WHERE session_id = ? LIMIT 1",
-                (session_id,),
+                "SELECT 1 FROM note_events WHERE session_id = ? AND note_key = ? LIMIT 1",
+                (session_id, note_key),
             ).fetchone()
         return row is not None
 
-    def save_session_note(
+    def save_note_event(
         self,
         *,
         session_id: str,
         website_id: str,
+        note_key: str,
         trade_in_id: str | None,
+        backoffice_link: str | None,
         note_content: str,
         sent_fingerprint: str | None,
     ) -> None:
@@ -151,11 +162,20 @@ class DedupStore:
         with self._connect() as conn:
             conn.execute(
                 """
-                INSERT OR REPLACE INTO session_notes (
-                  session_id, website_id, trade_in_id, note_content, sent_fingerprint, sent_at_ms
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                INSERT OR REPLACE INTO note_events (
+                  session_id, website_id, note_key, trade_in_id, backoffice_link, note_content, sent_fingerprint, sent_at_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (session_id, website_id, trade_in_id, note_content, sent_fingerprint, now_ms),
+                (
+                    session_id,
+                    website_id,
+                    note_key,
+                    trade_in_id,
+                    backoffice_link,
+                    note_content,
+                    sent_fingerprint,
+                    now_ms,
+                ),
             )
             conn.commit()
 
@@ -253,6 +273,17 @@ class AutoTradeInNoteService:
 
         return text
 
+    def _build_note_key(self, fields: dict[str, str | None]) -> str | None:
+        trade_in_id = (fields.get("trade_in_id") or "").strip()
+        if trade_in_id:
+            return f"tradein:{trade_in_id}"
+
+        backoffice_link = (fields.get("backoffice_link") or "").strip()
+        if backoffice_link:
+            return f"link:{backoffice_link}"
+
+        return None
+
     def process_webhook(self, payload: dict[str, Any], raw_body: str, headers: dict[str, str]) -> dict[str, Any]:
         self.verify_signature(raw_body, headers)
 
@@ -281,9 +312,6 @@ class AutoTradeInNoteService:
             self.in_flight_sessions.add(session_id)
 
         try:
-            if self.store.has_session_note(session_id):
-                return {"ok": True, "status": "ignored", "reason": "already_noted", "session_id": session_id}
-
             conversation = self.api.get_conversation(website_id, session_id)
             fields = self._extract_tradein_fields(conversation)
             if not fields.get("backoffice_link"):
@@ -294,13 +322,33 @@ class AutoTradeInNoteService:
                     "session_id": session_id,
                 }
 
+            note_key = self._build_note_key(fields)
+            if not note_key:
+                return {
+                    "ok": True,
+                    "status": "ignored",
+                    "reason": "note_key_missing",
+                    "session_id": session_id,
+                }
+
+            if self.store.has_note_event(session_id, note_key):
+                return {
+                    "ok": True,
+                    "status": "ignored",
+                    "reason": "already_noted_for_current_tradein",
+                    "session_id": session_id,
+                    "note_key": note_key,
+                }
+
             note_text = self._build_note(fields, session_id, website_id)
             sent = self.api.send_private_note(website_id, session_id, note_text)
 
-            self.store.save_session_note(
+            self.store.save_note_event(
                 session_id=session_id,
                 website_id=website_id,
+                note_key=note_key,
                 trade_in_id=fields.get("trade_in_id"),
+                backoffice_link=fields.get("backoffice_link"),
                 note_content=note_text,
                 sent_fingerprint=(sent.get("fingerprint") if isinstance(sent, dict) else None),
             )
@@ -313,6 +361,7 @@ class AutoTradeInNoteService:
                 "trade_in_id": fields.get("trade_in_id"),
                 "item_id": fields.get("item_id"),
                 "backoffice_link": fields.get("backoffice_link"),
+                "note_key": note_key,
                 "note_preview": note_text[:160],
             }
         finally:
